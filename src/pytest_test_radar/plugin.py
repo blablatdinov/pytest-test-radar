@@ -20,49 +20,56 @@
 # OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
 # OR OTHER DEALINGS IN THE SOFTWARE.
 
-import pytest
+import base64
+import datetime
+import zlib
+
 import httpx
-import json
+import pytest
 
-class TestRadarReporter:
-    def __init__(self, endpoint):
-        print('!!! Plugin inited')
-        self.endpoint = endpoint
-        self.test_results = []
+http_session = httpx.Client()
+session_start_date = datetime.datetime.now(tz=datetime.UTC).isoformat()
 
-    def pytest_runtest_logreport(self, report):
-        if report.when == "call":
-            self.test_results.append({
-                "test_name": report.nodeid,
-                "outcome": report.outcome,
-                "duration": report.duration,
-            })
 
-    def pytest_sessionfinish(self, session, exitstatus):
-        payload = {
-            "total_tests": len(self.test_results),
-            "results": self.test_results,
-        }
+def pytest_addoption(parser: pytest.Parser) -> None:
+    help_text = 'Test radar endpoint'
+    parser.addini('radar_endpoint', type='string', help=help_text)
+    parser.addoption('--radar-endpoint', help=help_text)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    if config.option.help:
+        return
+    if not config.getini('radar_endpoint') and not config.getoption('--radar-endpoint'):
+        msg = 'Provide `--radar-endpoint` in cli option or `radar_endpoint` in config file`'
+        raise pytest.UsageError(msg)
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    http_session.base_url = session.config.getoption('--radar-endpoint') or session.config.getini('radar_endpoint')
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    logs = ''
+    if report.when == 'call' and report.failed:
+        compressed = zlib.compress(report.longreprtext.encode('utf-8'))
+        encoded = base64.b64encode(compressed)
+        logs = encoded.decode('utf-8')
+    if report.when == 'call':
         try:
-            response = httpx.post(self.endpoint, json=payload)
+            response = http_session.post(
+                '/api/v1/test_record/create/',
+                json={
+                    'label': report.nodeid,
+                    'timestamp': session_start_date,
+                    'logs': logs,
+                    'success': not report.failed,
+                },
+            )
             response.raise_for_status()
-            print(f"!!! Test results successfully sent to {self.endpoint}")
-        except httpx.HTTPError as e:
-            print(f"!!! Failed to send test results: {e}")
+        except httpx.HTTPError as exc:
+            print(f'Some error occured on sending test record to radar. Exc: {exc}')
 
 
-@pytest.hookimpl
-def pytest_addoption(parser):
-    parser.addoption(
-        "--test-radar-endpoint",
-        action="store",
-        default="http://localhost:8000/api/test-results",
-        help="The endpoint for sending test results.",
-    )
-
-
-@pytest.hookimpl
-def pytest_configure(config):
-    endpoint = config.getoption("--test-radar-endpoint")
-    reporter = TestRadarReporter(endpoint)
-    config.pluginmanager.register(reporter, "test_radar_reporter")
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    http_session.close()
