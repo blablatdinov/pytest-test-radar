@@ -32,7 +32,7 @@ import pytest
 logger = logging.getLogger('pytest-test-radar')
 
 http_session = httpx.Client()
-session_start_date = datetime.datetime.now(tz=datetime.UTC).isoformat()
+session_start_date = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
 
 _pending_records: list[dict] = []
 _batch_size = 50
