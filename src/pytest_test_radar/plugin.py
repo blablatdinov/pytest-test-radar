@@ -34,6 +34,9 @@ logger = logging.getLogger('pytest-test-radar')
 http_session = httpx.Client()
 session_start_date = datetime.datetime.now(tz=datetime.UTC).isoformat()
 
+_pending_records: list[dict] = []
+_batch_size = 50
+
 
 def _git_value(args: list[str]) -> str:
     try:
@@ -47,10 +50,13 @@ def _git_value(args: list[str]) -> str:
 def pytest_addoption(parser: pytest.Parser) -> None:
     endpoint_help = 'Test radar endpoint'
     token_help = 'Test radar agent token'
+    batch_help = 'Number of test records to batch before sending (default: 50)'
     parser.addini('radar_endpoint', type='string', help=endpoint_help)
     parser.addoption('--radar-endpoint', help=endpoint_help)
     parser.addini('radar_token', type='string', help=token_help)
     parser.addoption('--radar-token', help=token_help)
+    parser.addini('radar_batch_size', type='string', help=batch_help)
+    parser.addoption('--radar-batch-size', help=batch_help, type=int, default=50)
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -66,38 +72,63 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
+    global _batch_size
     token = session.config.getoption('--radar-token') or session.config.getini('radar_token')
     http_session.base_url = session.config.getoption('--radar-endpoint') or session.config.getini('radar_endpoint')
     http_session.headers['Authorization'] = f'Token {token}'
+    raw_batch_size = session.config.getoption('--radar-batch-size')
+    if raw_batch_size is None:
+        ini_val = session.config.getini('radar_batch_size')
+        if ini_val:
+            try:
+                raw_batch_size = int(ini_val)
+            except ValueError:
+                logger.warning('Invalid radar_batch_size value %r, using default 50', ini_val)
+                raw_batch_size = 50
+        else:
+            raw_batch_size = 50
+    _batch_size = max(1, raw_batch_size)
 
 
 _git_branch = _git_value(['git', 'rev-parse', '--abbrev-ref', 'HEAD'])
 _git_commit = _git_value(['git', 'rev-parse', 'HEAD'])
 
 
+def _flush_batch() -> None:
+    if not _pending_records:
+        return
+    records = _pending_records[:]
+    _pending_records.clear()
+    try:
+        response = http_session.post(
+            '/api/v1/test_record/bulk_create/',
+            json={'records': records},
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        logger.error('Failed to send %d test records to radar: %s', len(records), exc)
+
+
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    if report.when != 'call':
+        return
     logs = ''
-    if report.when == 'call' and report.failed:
+    if report.failed:
         compressed = zlib.compress(report.longreprtext.encode('utf-8'))
         encoded = base64.b64encode(compressed)
         logs = encoded.decode('utf-8')
-    if report.when == 'call':
-        try:
-            response = http_session.post(
-                '/api/v1/test_record/create/',
-                json={
-                    'label': report.nodeid,
-                    'timestamp': session_start_date,
-                    'logs': logs,
-                    'success': not report.failed,
-                    'branch': _git_branch,
-                    'commit': _git_commit,
-                },
-            )
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            logger.error('Failed to send test record to radar: %s', exc)
+    _pending_records.append({
+        'label': report.nodeid,
+        'timestamp': session_start_date,
+        'logs': logs,
+        'success': not report.failed,
+        'branch': _git_branch,
+        'commit': _git_commit,
+    })
+    if len(_pending_records) >= _batch_size:
+        _flush_batch()
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    _flush_batch()
     http_session.close()

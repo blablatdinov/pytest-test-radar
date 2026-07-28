@@ -1,6 +1,6 @@
 # The MIT License (MIT).
 #
-# Copyright (c) 2024 Almaz Ilaletdinov <a.ilaletdinov@yandex.ru>
+# Copyright (c) 2024 Almaz Ilaetdinov <a.ilaletdinov@yandex.ru>
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -20,58 +20,138 @@
 # OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
 # OR OTHER DEALINGS IN THE SOFTWARE.
 
-import os
+import httpx
 import pytest
-import subprocess
-from pathlib import Path
+from pytest_test_radar import plugin
 
-received_data = []
+pytest_plugins = ['pytester']
+
+
+def _make_mock_transport(received_requests: list[dict]) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+        body = json.loads(request.content)
+        received_requests.append(body)
+        return httpx.Response(200, json={'created': len(body.get('records', []))})
+    return httpx.MockTransport(handler)
 
 
 @pytest.fixture
-def test_dir(tmp_path):
-    test_file = tmp_path / "test_sample.py"
-    current_dir = Path().absolute()
-    os.chdir(tmp_path)
-    subprocess.run(['python', '-m', 'venv', 'venv'], check=True)
-    subprocess.run(['venv/bin/pip', 'install', 'pip', '-U'], check=True)
-    subprocess.run(['venv/bin/pip', 'install', str(current_dir)], check=True)
-    test_file.write_text('\n'.join([
-        'def test_pass():',
-        '    assert 1 == 1',
-        '',
-        'def test_fail():',
-        '    assert 1 == 2',
-    ]))
-    yield tmp_path
-    os.chdir(current_dir)
+def mock_http(monkeypatch):
+    received: list[dict] = []
+    transport = _make_mock_transport(received)
+    mock_client = httpx.Client(transport=transport)
+    monkeypatch.setattr(plugin, 'http_session', mock_client)
+    monkeypatch.setattr(plugin, '_pending_records', [])
+    yield received
+    mock_client.close()
 
 
-def test_pytest_plugin(test_dir):
-    server_url = "http://testserver/api/test-results"
-    print('run subprocess')
-    result = subprocess.run(
-        [
-            "pytest",
-            str(test_dir),
-            "-p", "pytest_test_radar.plugin",
-            '-s',
-            f"--test-radar-endpoint={server_url}",
-            "--trace",
-            # "--trace-config",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+def _write_test_file(pytester: pytest.Pytester, num_tests: int) -> None:
+    lines = []
+    for i in range(num_tests):
+        if i % 2 == 0:
+            lines.extend([f'def test_pass_{i}():', '    assert 1 == 1', ''])
+        else:
+            lines.extend([f'def test_fail_{i}():', '    assert 1 == 2', ''])
+    pytester.makepyfile('\n'.join(lines))
+
+
+def test_batch_sends_bulk_request(pytester: pytest.Pytester, mock_http):
+    _write_test_file(pytester, 6)
+
+    result = pytester.runpytest(
+        '-p', 'test_radar',
+        '--radar-endpoint=http://testserver',
+        '--radar-token=test-token',
+        '--radar-batch-size=3',
     )
 
-    print('Stdout:', result.stdout)
-    print('Stderr:', result.stderr)
+    result.assert_outcomes(passed=3, failed=3)
 
-    assert result.returncode != 5, "Pytest configuration error:\n{0}".format(result.stderr)
-    assert len(received_data) == 1, "No data was sent to the test server"
-    data = received_data[0]
-    assert data["total_tests"] == 2
-    assert len(data["results"]) == 2
-    assert any(result["outcome"] == "passed" for result in data["results"])
-    assert any(result["outcome"] == "failed" for result in data["results"])
+    total_records = sum(len(req.get('records', [])) for req in mock_http)
+    assert total_records == 6, f'Expected 6 records sent, got {total_records}'
+
+    assert len(mock_http) == 2, f'Expected 2 bulk requests (batch_size=3, 6 tests), got {len(mock_http)}'
+
+    first_batch = mock_http[0]['records']
+    assert len(first_batch) == 3
+    assert all('label' in r for r in first_batch)
+    assert all('success' in r for r in first_batch)
+    assert all('branch' in r for r in first_batch)
+    assert all('commit' in r for r in first_batch)
+
+
+def test_final_flush_sends_remaining(pytester: pytest.Pytester, mock_http):
+    _write_test_file(pytester, 4)
+
+    result = pytester.runpytest(
+        '-p', 'test_radar',
+        '--radar-endpoint=http://testserver',
+        '--radar-token=test-token',
+        '--radar-batch-size=10',
+    )
+
+    result.assert_outcomes(passed=2, failed=2)
+
+    assert len(mock_http) == 1, f'Expected 1 bulk request (4 < batch_size 10), got {len(mock_http)}'
+    assert len(mock_http[0]['records']) == 4
+
+
+def test_default_batch_size(pytester: pytest.Pytester, mock_http):
+    _write_test_file(pytester, 2)
+
+    result = pytester.runpytest(
+        '-p', 'test_radar',
+        '--radar-endpoint=http://testserver',
+        '--radar-token=test-token',
+    )
+
+    result.assert_outcomes(passed=1, failed=1)
+
+    assert len(mock_http) == 1
+    assert len(mock_http[0]['records']) == 2
+
+
+def test_failed_test_includes_logs(pytester: pytest.Pytester, mock_http):
+    pytester.makepyfile(
+        '''
+def test_fail():
+    assert 1 == 2
+'''
+    )
+
+    result = pytester.runpytest(
+        '-p', 'test_radar',
+        '--radar-endpoint=http://testserver',
+        '--radar-token=test-token',
+        '--radar-batch-size=10',
+    )
+
+    result.assert_outcomes(failed=1)
+    assert len(mock_http) == 1
+    record = mock_http[0]['records'][0]
+    assert record['success'] is False
+    assert record['logs'] != ''
+
+
+def test_passed_test_has_empty_logs(pytester: pytest.Pytester, mock_http):
+    pytester.makepyfile(
+        '''
+def test_pass():
+    assert 1 == 1
+'''
+    )
+
+    result = pytester.runpytest(
+        '-p', 'test_radar',
+        '--radar-endpoint=http://testserver',
+        '--radar-token=test-token',
+        '--radar-batch-size=10',
+    )
+
+    result.assert_outcomes(passed=1)
+    assert len(mock_http) == 1
+    record = mock_http[0]['records'][0]
+    assert record['success'] is True
+    assert record['logs'] == ''
