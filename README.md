@@ -48,11 +48,24 @@ pip install pytest-test-radar
 
 ## Usage
 
-Run pytest with the --test-radar-endpoint option to specify the server where statistics will be sent:
+Run pytest with `--radar-endpoint` and `--radar-token` options to specify
+the server URL and agent token:
 
 ```bash
-pytest --test-radar-endpoint="http://your-server.com/api/test-results"
+pytest --radar-endpoint="http://your-server.com" --radar-token="ci_your_token_here"
 ```
+
+You can also configure both via `pyproject.toml`:
+
+```toml
+[tool.pytest.ini_options]
+radar_endpoint = "http://your-server.com"
+radar_token = "ci_your_token_here"
+```
+
+The token is obtained from the Test Radar web UI when creating or regenerating
+an agent for a project. It is sent as an `Authorization: Token <token>` header
+with every request.
 
 ## Example
 
@@ -70,25 +83,16 @@ def test_fail():
 Run the tests with the plugin:
 
 ```bash
-pytest test_sample.py --test-radar-endpoint="http://localhost:8000/api/test-results"
+pytest test_sample.py --radar-endpoint="http://localhost:8000" --radar-token="ci_your_token_here"
 ```
 
-This will send the following payload to the specified endpoint:
+Each test result is sent individually to `/api/v1/test_record/create/`:
 
 ```json
 {
-  "total_tests": 2,
-  "results": [
-    {
-      "test_name": "test_sample.py::test_pass",
-      "outcome": "passed",
-      "duration": 0.001
-    },
-    {
-      "test_name": "test_sample.py::test_fail",
-      "outcome": "failed",
-      "duration": 0.002
-    }
-  ]
+  "label": "test_sample.py::test_pass",
+  "timestamp": "2024-01-01T12:00:00+00:00",
+  "logs": "",
+  "success": true
 }
 ```
