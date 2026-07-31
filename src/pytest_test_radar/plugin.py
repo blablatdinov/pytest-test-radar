@@ -20,6 +20,7 @@
 # OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
 # OR OTHER DEALINGS IN THE SOFTWARE.
 
+import uuid
 import base64
 import datetime
 import logging
@@ -68,7 +69,6 @@ def pytest_configure(config: pytest.Config) -> None:
     if not config.getini('radar_token') and not config.getoption('--radar-token'):
         msg = 'Provide `--radar-token` in cli option or `radar_token` in config file`'
         raise pytest.UsageError(msg)
-    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
@@ -99,14 +99,21 @@ def _flush_batch() -> None:
         return
     records = _pending_records[:]
     _pending_records.clear()
+    session_id = str(uuid.uuid4())
     try:
         response = http_session.post(
             '/api/v1/test_record/bulk_create/',
-            json={'records': records},
+            json={'records': records, 'session_id': session_id},
         )
         response.raise_for_status()
     except httpx.HTTPError as exc:
-        logger.error('Failed to send %d test records to radar: %s', len(records), exc)
+        logger.error(
+            'Failed to send %d test records to radar: %s. Response content: %s',
+            len(records),
+            exc,
+            response.content,
+        )
+        pytest.exit(f"FATAL: Failed to send test records to Radar: {exc}", returncode=1)
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:

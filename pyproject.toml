@@ -22,7 +22,7 @@
 
 [project]
 name = "pytest-test-radar"
-version = "0.0.0"
+version = "0.0.1-a5"
 description = "A pytest plugin to send test statistics to Test Radar."
 readme = "README.md"
 requires-python = ">=3.10"
