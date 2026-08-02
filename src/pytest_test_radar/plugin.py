@@ -20,15 +20,16 @@
 # OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
 # OR OTHER DEALINGS IN THE SOFTWARE.
 
-import uuid
 import base64
 import datetime
 import logging
+import platform
 import subprocess
-import zlib
+import uuid
 
 import httpx
 import pytest
+import zstandard
 
 logger = logging.getLogger('pytest-test-radar')
 
@@ -37,6 +38,8 @@ session_start_date = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
 
 _pending_records: list[dict] = []
 _batch_size = 50
+_session_id: str | None = None
+_zstd_compressor = zstandard.ZstdCompressor()
 
 
 def _git_value(args: list[str]) -> str:
@@ -45,7 +48,7 @@ def _git_value(args: list[str]) -> str:
         return result.stdout.strip()
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as exc:
         logger.warning('Failed to get git info (%s): %s', ' '.join(args), exc)
-        return ''
+        return 'unknown'
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -72,7 +75,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
-    global _batch_size
+    global _batch_size, _session_id
     token = session.config.getoption('--radar-token') or session.config.getini('radar_token')
     http_session.base_url = session.config.getoption('--radar-endpoint') or session.config.getini('radar_endpoint')
     http_session.headers['Authorization'] = f'Token {token}'
@@ -88,6 +91,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         else:
             raw_batch_size = 50
     _batch_size = max(1, raw_batch_size)
+    _session_id = str(uuid.uuid4())
 
 
 _git_branch = _git_value(['git', 'rev-parse', '--abbrev-ref', 'HEAD'])
@@ -99,11 +103,23 @@ def _flush_batch() -> None:
         return
     records = _pending_records[:]
     _pending_records.clear()
-    session_id = str(uuid.uuid4())
     try:
         response = http_session.post(
             '/api/v1/test_record/bulk_create/',
-            json={'records': records, 'session_id': session_id},
+            json={
+                'session_id': _session_id,
+                'started_at': session_start_date,
+                'environment': {
+                    'os': platform.system(),
+                    'os_version': platform.release(),
+                    'arch': platform.machine(),
+                },
+                'context': {
+                    'branch': _git_branch,
+                    'commit_hash': _git_commit,
+                },
+                'records': records,
+            },
         )
         response.raise_for_status()
     except httpx.HTTPError as exc:
@@ -121,7 +137,7 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         return
     logs = ''
     if report.failed:
-        compressed = zlib.compress(report.longreprtext.encode('utf-8'))
+        compressed = _zstd_compressor.compress(report.longreprtext.encode('utf-8'))
         encoded = base64.b64encode(compressed)
         logs = encoded.decode('utf-8')
     _pending_records.append({
@@ -129,8 +145,6 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         'timestamp': session_start_date,
         'logs': logs,
         'success': not report.failed,
-        'branch': _git_branch,
-        'commit': _git_commit,
     })
     if len(_pending_records) >= _batch_size:
         _flush_batch()

@@ -22,6 +22,7 @@
 
 import httpx
 import pytest
+
 from pytest_test_radar import plugin
 
 pytest_plugins = ['pytester']
@@ -32,7 +33,7 @@ def _make_mock_transport(received_requests: list[dict]) -> httpx.MockTransport:
         import json
         body = json.loads(request.content)
         received_requests.append(body)
-        return httpx.Response(200, json={'created': len(body.get('records', []))})
+        return httpx.Response(201, json={'created': len(body.get('records', []))})
     return httpx.MockTransport(handler)
 
 
@@ -78,8 +79,8 @@ def test_batch_sends_bulk_request(pytester: pytest.Pytester, mock_http):
     assert len(first_batch) == 3
     assert all('label' in r for r in first_batch)
     assert all('success' in r for r in first_batch)
-    assert all('branch' in r for r in first_batch)
-    assert all('commit' in r for r in first_batch)
+    assert all('branch' not in r for r in first_batch)
+    assert all('commit' not in r for r in first_batch)
 
 
 def test_final_flush_sends_remaining(pytester: pytest.Pytester, mock_http):
@@ -155,3 +156,42 @@ def test_pass():
     record = mock_http[0]['records'][0]
     assert record['success'] is True
     assert record['logs'] == ''
+
+
+def test_request_includes_session_fields(pytester: pytest.Pytester, mock_http):
+    _write_test_file(pytester, 2)
+
+    result = pytester.runpytest(
+        '-p', 'test_radar',
+        '--radar-endpoint=http://testserver',
+        '--radar-token=test-token',
+    )
+
+    result.assert_outcomes(passed=1, failed=1)
+    assert len(mock_http) == 1
+    request_body = mock_http[0]
+    assert 'session_id' in request_body
+    assert 'started_at' in request_body
+    assert 'environment' in request_body
+    env = request_body['environment']
+    assert 'os' in env
+    assert 'os_version' in env
+    assert 'arch' in env
+    ctx = request_body['context']
+    assert 'branch' in ctx
+    assert 'commit_hash' in ctx
+
+
+def test_single_session_id_across_batches(pytester: pytest.Pytester, mock_http):
+    _write_test_file(pytester, 6)
+
+    result = pytester.runpytest(
+        '-p', 'test_radar',
+        '--radar-endpoint=http://testserver',
+        '--radar-token=test-token',
+        '--radar-batch-size=3',
+    )
+
+    result.assert_outcomes(passed=3, failed=3)
+    assert len(mock_http) == 2
+    assert mock_http[0]['session_id'] == mock_http[1]['session_id']

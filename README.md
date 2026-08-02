@@ -86,13 +86,36 @@ Run the tests with the plugin:
 pytest test_sample.py --radar-endpoint="http://localhost:8000" --radar-token="ci_your_token_here"
 ```
 
-Each test result is sent individually to `/api/v1/test_record/create/`:
+Test results are accumulated and sent in batches to `/api/v1/test_record/bulk_create/`:
 
 ```json
 {
-  "label": "test_sample.py::test_pass",
-  "timestamp": "2024-01-01T12:00:00+00:00",
-  "logs": "",
-  "success": true
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "started_at": "2024-01-01T12:00:00+00:00",
+  "environment": {
+    "os": "Linux",
+    "os_version": "6.6.0",
+    "arch": "x86_64"
+  },
+  "context": {
+    "branch": "main",
+    "commit_hash": "abc123def456"
+  },
+  "records": [
+    {
+      "label": "test_sample.py::test_pass",
+      "timestamp": "2024-01-01T12:00:00+00:00",
+      "logs": "",
+      "success": true
+    },
+    {
+      "label": "test_sample.py::test_fail",
+      "timestamp": "2024-01-01T12:00:00+00:00",
+      "logs": "KLUv/QBY...",
+      "success": false
+    }
+  ]
 }
 ```
+
+The `logs` field for failed tests contains base64-encoded zstd-compressed traceback text.
