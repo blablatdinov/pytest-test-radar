@@ -195,3 +195,57 @@ def test_single_session_id_across_batches(pytester: pytest.Pytester, mock_http):
     result.assert_outcomes(passed=3, failed=3)
     assert len(mock_http) == 2
     assert mock_http[0]['session_id'] == mock_http[1]['session_id']
+
+
+def test_token_from_env_var(pytester: pytest.Pytester, mock_http, monkeypatch):
+    monkeypatch.setenv('RADAR_TOKEN', 'env-token')
+    _write_test_file(pytester, 2)
+
+    result = pytester.runpytest(
+        '-p', 'test_radar',
+        '--radar-endpoint=http://testserver',
+    )
+
+    result.assert_outcomes(passed=1, failed=1)
+    assert len(mock_http) == 1
+
+
+def test_token_from_dotenv_file(pytester: pytest.Pytester, mock_http, monkeypatch):
+    monkeypatch.delenv('RADAR_TOKEN', raising=False)
+    (pytester.path / '.env').write_text('RADAR_TOKEN=dotenv-token\n')
+    _write_test_file(pytester, 2)
+    monkeypatch.chdir(pytester.path)
+
+    result = pytester.runpytest(
+        '-p', 'test_radar',
+        '--radar-endpoint=http://testserver',
+    )
+
+    result.assert_outcomes(passed=1, failed=1)
+    assert len(mock_http) == 1
+
+
+def test_cli_token_overrides_env(pytester: pytest.Pytester, mock_http, monkeypatch):
+    monkeypatch.setenv('RADAR_TOKEN', 'env-token')
+    _write_test_file(pytester, 2)
+
+    result = pytester.runpytest(
+        '-p', 'test_radar',
+        '--radar-endpoint=http://testserver',
+        '--radar-token=cli-token',
+    )
+
+    result.assert_outcomes(passed=1, failed=1)
+    assert len(mock_http) == 1
+
+
+def test_missing_token_raises_error(pytester: pytest.Pytester, mock_http, monkeypatch):
+    monkeypatch.delenv('RADAR_TOKEN', raising=False)
+    _write_test_file(pytester, 2)
+
+    result = pytester.runpytest(
+        '-p', 'test_radar',
+        '--radar-endpoint=http://testserver',
+    )
+
+    assert result.ret != 0

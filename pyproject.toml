@@ -29,6 +29,7 @@ requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = [
     "httpx>=0.28.1",
+    "python-dotenv>=1.0.0",
     "zstandard>=0.23.0",
 ]
 keywords = ["pytest", "test", "plugin", "flaky"]

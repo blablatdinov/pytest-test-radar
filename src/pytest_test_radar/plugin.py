@@ -23,6 +23,7 @@
 import base64
 import datetime
 import logging
+import os
 import platform
 import subprocess
 import uuid
@@ -30,6 +31,7 @@ import uuid
 import httpx
 import pytest
 import zstandard
+from dotenv import find_dotenv, load_dotenv
 
 logger = logging.getLogger('pytest-test-radar')
 
@@ -66,17 +68,30 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 def pytest_configure(config: pytest.Config) -> None:
     if config.option.help:
         return
+    load_dotenv(find_dotenv(usecwd=True))
     if not config.getini('radar_endpoint') and not config.getoption('--radar-endpoint'):
         msg = 'Provide `--radar-endpoint` in cli option or `radar_endpoint` in config file`'
         raise pytest.UsageError(msg)
-    if not config.getini('radar_token') and not config.getoption('--radar-token'):
-        msg = 'Provide `--radar-token` in cli option or `radar_token` in config file`'
+    token = (
+        config.getoption('--radar-token')
+        or os.environ.get('RADAR_TOKEN')
+        or config.getini('radar_token')
+    )
+    if not token:
+        msg = (
+            'Provide `--radar-token` in cli option, `RADAR_TOKEN` env variable, '
+            'or `radar_token` in config file'
+        )
         raise pytest.UsageError(msg)
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
     global _batch_size, _session_id
-    token = session.config.getoption('--radar-token') or session.config.getini('radar_token')
+    token = (
+        session.config.getoption('--radar-token')
+        or os.environ.get('RADAR_TOKEN')
+        or session.config.getini('radar_token')
+    )
     http_session.base_url = session.config.getoption('--radar-endpoint') or session.config.getini('radar_endpoint')
     http_session.headers['Authorization'] = f'Token {token}'
     raw_batch_size = session.config.getoption('--radar-batch-size')
