@@ -179,6 +179,8 @@ def test_request_includes_session_fields(pytester: pytest.Pytester, mock_http):
     assert 'arch' in env
     ctx = request_body['context']
     assert 'branch' in ctx
+    assert ctx['branch'] != 'HEAD'
+    assert ctx['branch'] != 'unknown'
     assert 'commit_hash' in ctx
 
 

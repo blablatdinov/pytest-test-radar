@@ -109,7 +109,35 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     _session_id = str(uuid.uuid4())
 
 
-_git_branch = _git_value(['git', 'rev-parse', '--abbrev-ref', 'HEAD'])
+_CI_BRANCH_VARS = (
+    'GITHUB_REF',
+    'CI_COMMIT_BRANCH',
+    'GITLAB_BRANCH',
+    'DRONE_BRANCH',
+    'BRANCH_NAME',
+    'CIRCLE_BRANCH',
+    'BUILDKITE_BRANCH',
+    'BITBUCKET_BRANCH',
+)
+
+
+def _resolve_branch() -> str:
+    for var in _CI_BRANCH_VARS:
+        value = os.environ.get(var)
+        if value and value != 'HEAD':
+            if var == 'GITHUB_REF' and value.startswith('refs/heads/'):
+                return value[len('refs/heads/'):]
+            return value
+    branch = _git_value(['git', 'rev-parse', '--abbrev-ref', 'HEAD'])
+    if branch and branch != 'HEAD':
+        return branch
+    branch = _git_value(['git', 'branch', '--show-current'])
+    if branch and branch != 'unknown':
+        return branch
+    return 'unknown'
+
+
+_git_branch = _resolve_branch()
 _git_commit = _git_value(['git', 'rev-parse', 'HEAD'])
 
 
