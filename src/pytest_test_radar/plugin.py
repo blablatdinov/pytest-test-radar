@@ -38,6 +38,8 @@ logger = logging.getLogger('pytest-test-radar')
 http_session = httpx.Client()
 session_start_date = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
 
+_process_setup = False
+_processed_records: set[str] = set()
 _pending_records: list[dict] = []
 _batch_size = 50
 _session_id: str | None = None
@@ -57,15 +59,19 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     endpoint_help = 'Test radar endpoint'
     token_help = 'Test radar agent token'
     batch_help = 'Number of test records to batch before sending (default: 50)'
+    setup_help = 'Collect tests when setting up.'
     parser.addini('radar_endpoint', type='string', help=endpoint_help)
     parser.addoption('--radar-endpoint', help=endpoint_help)
     parser.addini('radar_token', type='string', help=token_help)
     parser.addoption('--radar-token', help=token_help)
     parser.addini('radar_batch_size', type='string', help=batch_help)
     parser.addoption('--radar-batch-size', help=batch_help, type=int, default=50)
+    parser.addini('radar_include_setup', type='bool', help=setup_help)
+    parser.addoption('--radar-include-setup', type=bool, help=setup_help)
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    global _process_setup
     if config.option.help:
         return
     load_dotenv(find_dotenv(usecwd=True))
@@ -83,6 +89,7 @@ def pytest_configure(config: pytest.Config) -> None:
             'or `radar_token` in config file'
         )
         raise pytest.UsageError(msg)
+    _process_setup = bool(config.getoption('--radar-include-setup') or config.getini('radar_include_setup'))
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
@@ -176,13 +183,17 @@ def _flush_batch() -> None:
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    if report.when != 'call':
+    should_process = report.when == 'call' or (report.when == 'setup' and _process_setup)
+    if not should_process:
+        return
+    if report.nodeid in _processed_records:
         return
     logs = ''
     if report.failed:
         compressed = _zstd_compressor.compress(report.longreprtext.encode('utf-8'))
         encoded = base64.b64encode(compressed)
         logs = encoded.decode('utf-8')
+    _processed_records.add(report.nodeid)
     _pending_records.append({
         'label': report.nodeid,
         'timestamp': session_start_date,

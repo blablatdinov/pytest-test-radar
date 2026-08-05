@@ -61,6 +61,9 @@ You can also configure both via `pyproject.toml`:
 [tool.pytest.ini_options]
 radar_endpoint = "http://your-server.com"
 radar_token = "ci_your_token_here"
+
+# Optional
+radar_include_setup = true # False by default; --radar-include-setup
 ```
 
 The token is obtained from the Test Radar web UI when creating or regenerating
