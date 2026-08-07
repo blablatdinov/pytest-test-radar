@@ -30,6 +30,7 @@ license = {text = "MIT"}
 dependencies = [
     "httpx>=0.28.1",
     "python-dotenv>=1.0.0",
+    "tenacity>=9.1.4",
     "zstandard>=0.23.0",
 ]
 keywords = ["pytest", "test", "plugin", "flaky"]
