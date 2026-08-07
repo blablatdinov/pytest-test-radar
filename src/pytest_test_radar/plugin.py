@@ -141,6 +141,7 @@ def _flush_batch() -> None:
         return
     records = _pending_records[:]
     _pending_records.clear()
+    content = ''
     try:
         response = http_session.post(
             '/api/v1/test_record/bulk_create/',
@@ -159,13 +160,14 @@ def _flush_batch() -> None:
                 'records': records,
             },
         )
+        content = response.content
         response.raise_for_status()
     except httpx.HTTPError as exc:
         logger.error(
             'Failed to send %d test records to radar: %s. Response content: %s',
             len(records),
             exc,
-            response.content,
+            content,
         )
         pytest.exit(f"FATAL: Failed to send test records to Radar: {exc}", returncode=1)
 
