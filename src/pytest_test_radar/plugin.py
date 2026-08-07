@@ -32,6 +32,7 @@ import httpx
 import pytest
 import zstandard
 from dotenv import find_dotenv, load_dotenv
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 logger = logging.getLogger('pytest-test-radar')
 
@@ -148,6 +149,12 @@ _git_branch = _resolve_branch()
 _git_commit = _git_value(['git', 'rev-parse', 'HEAD'])
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=retry_if_exception_type((httpx.HTTPError, httpx.ConnectError, httpx.TimeoutException, httpx.TransportError)),
+    reraise=True
+)
 def _flush_batch() -> None:
     if not _pending_records:
         return
